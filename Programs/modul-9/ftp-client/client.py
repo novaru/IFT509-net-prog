@@ -1,14 +1,17 @@
 import socket
+import ssl
 import os
 
-# Konfigurasi client
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 2121
 BUFFER_SIZE = 1024
+DOWNLOADS_DIR = "downloads"
+
+if not os.path.exists(DOWNLOADS_DIR):
+    os.makedirs(DOWNLOADS_DIR)
 
 
 def print_menu():
-    """Display menu options to the user."""
     print("\n=== FTP Client Menu ===")
     print("1. List files on server")
     print("2. Upload file to server")
@@ -19,15 +22,39 @@ def print_menu():
     print("=======================\n")
 
 
-def start_client():
-    # Membuat socket klien
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((SERVER_HOST, SERVER_PORT))
-    print("[CONNECTED] Connected to FTP server.")
+def authenticate(client_socket):
+    username = input("Enter username: ").strip()
+    password = input("Enter password: ").strip()
 
-    while True:
-        print_menu()
-        try:
+    client_socket.send(username.encode())
+    client_socket.send(password.encode())
+
+    response = client_socket.recv(BUFFER_SIZE).decode()
+    if "SUCCESS" in response:
+        print("[SUCCESS] Authentication successful.")
+        return True
+    print("[ERROR] Authentication failed.")
+    return False
+
+
+def start_client():
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket = context.wrap_socket(client_socket, server_hostname=SERVER_HOST)
+
+    try:
+        client_socket.connect((SERVER_HOST, SERVER_PORT))
+        print("[CONNECTED] Connected to FTP server.")
+
+        if not authenticate(client_socket):
+            client_socket.close()
+            return
+
+        while True:
+            print_menu()
             choice = input("Select an option (1-6): ").strip()
 
             if choice == "1":  # List files
@@ -43,9 +70,10 @@ def start_client():
                     client_socket.send(f"UPLOAD {filename}".encode())
 
                     with open(filepath, "rb") as f:
-                        while data := f.read(BUFFER_SIZE):
-                            client_socket.send(data)
+                        data = f.read()
+                        client_socket.send(data)
                         client_socket.send(b"DONE")
+
                     response = client_socket.recv(BUFFER_SIZE).decode()
                     print(response)
                 else:
@@ -54,15 +82,16 @@ def start_client():
             elif choice == "3":  # Download file
                 filename = input("Enter the name of the file to download: ").strip()
                 client_socket.send(f"DOWNLOAD {filename}".encode())
-                save_path = os.path.join("ftp-client/downloads", filename)
+
+                save_path = os.path.join(DOWNLOADS_DIR, filename)
                 with open(save_path, "wb") as f:
                     while True:
                         data = client_socket.recv(BUFFER_SIZE)
-                        if data == b"DONE":
-                            f.write(data[:-4])
+                        if data.endswith(b"DONE"):
+                            f.write(data[:-4])  # Remove DONE marker
                             break
                         f.write(data)
-                print(f"File {filename} downloaded to {save_path}.")
+                print(f"File {filename} downloaded to {save_path}")
 
             elif choice == "4":  # Create directory
                 dirname = input("Enter the name of the directory to create: ").strip()
@@ -85,12 +114,11 @@ def start_client():
             else:
                 print("Invalid choice. Please select 1-6.")
 
-        except Exception as e:
-            print(f"[ERROR] {e}")
-            break
-
-    client_socket.close()
-    print("[DISCONNECTED] Client closed connection.")
+    except Exception as e:
+        print(f"[ERROR] {e}")
+    finally:
+        client_socket.close()
+        print("[DISCONNECTED] Client closed connection.")
 
 
 if __name__ == "__main__":

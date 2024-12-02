@@ -1,107 +1,125 @@
 import socket
+import ssl
 import os
-import threading
 
-# Konfigurasi server
-HOST = "127.0.0.1"
-PORT = 2121
-BASE_DIR = "ftp-server/files"  # Direktori penyimpanan file
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 2121
+BUFFER_SIZE = 1024
+DOWNLOADS_DIR = "downloads"
 
-# Membuat direktori penyimpanan jika belum ada
-if not os.path.exists(BASE_DIR):
-    os.makedirs(BASE_DIR)
+if not os.path.exists(DOWNLOADS_DIR):
+    os.makedirs(DOWNLOADS_DIR)
 
 
-def handle_client(client_socket, addr):
-    print(f"[NEW CONNECTION] {addr} connected.")
+def print_menu():
+    print("\n=== FTP Client Menu ===")
+    print("1. List files on server")
+    print("2. Upload file to server")
+    print("3. Download file from server")
+    print("4. Create directory on server")
+    print("5. Remove directory on server")
+    print("6. Quit")
+    print("=======================\n")
 
-    while True:
-        try:
-            command = client_socket.recv(1024).decode().strip()
-            if not command:
-                break
 
-            if command == "LIST":
-                files = "\n".join(os.listdir(BASE_DIR))
-                client_socket.send(files.encode())
+def authenticate(client_socket):
+    username = input("Enter username: ").strip()
+    password = input("Enter password: ").strip()
 
-            elif command.startswith("UPLOAD"):
-                _, filename = command.split(maxsplit=1)
-                filepath = os.path.join(BASE_DIR, filename)
+    client_socket.send(username.encode())
+    client_socket.send(password.encode())
 
-                with open(filepath, "wb") as f:
+    response = client_socket.recv(BUFFER_SIZE).decode()
+    if "SUCCESS" in response:
+        print("[SUCCESS] Authentication successful.")
+        return True
+    print("[ERROR] Authentication failed.")
+    return False
+
+
+def start_client():
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket = context.wrap_socket(client_socket, server_hostname=SERVER_HOST)
+
+    try:
+        client_socket.connect((SERVER_HOST, SERVER_PORT))
+        print("[CONNECTED] Connected to FTP server.")
+
+        if not authenticate(client_socket):
+            client_socket.close()
+            return
+
+        while True:
+            print_menu()
+            choice = input("Select an option (1-6): ").strip()
+
+            if choice == "1":  # List files
+                client_socket.send("LIST".encode())
+                response = client_socket.recv(BUFFER_SIZE).decode()
+                print("\nFiles on server:")
+                print(response)
+
+            elif choice == "2":  # Upload file
+                filepath = input("Enter the path of the file to upload: ").strip()
+                if os.path.exists(filepath):
+                    filename = os.path.basename(filepath)
+                    client_socket.send(f"UPLOAD {filename}".encode())
+
+                    with open(filepath, "rb") as f:
+                        data = f.read()
+                        client_socket.send(data)
+                        client_socket.send(b"DONE")
+
+                    response = client_socket.recv(BUFFER_SIZE).decode()
+                    print(response)
+                else:
+                    print("File not found. Please check the path.")
+
+            elif choice == "3":  # Download file
+                filename = input("Enter the name of the file to download: ").strip()
+                client_socket.send(f"DOWNLOAD {filename}".encode())
+
+                save_path = os.path.join(DOWNLOADS_DIR, filename)
+                with open(save_path, "wb") as f:
                     while True:
-                        data = client_socket.recv(1024)
+                        data = client_socket.recv(BUFFER_SIZE)
                         if data.endswith(b"DONE"):
-                            f.write(data[:-4])
+                            f.write(data[:-4])  # Remove DONE marker
                             break
                         f.write(data)
+                print(f"File {filename} downloaded to {save_path}")
 
-                client_socket.send(f"[SUCCESS] File {filename} uploaded.".encode())
+            elif choice == "4":  # Create directory
+                dirname = input("Enter the name of the directory to create: ").strip()
+                client_socket.send(f"MKDIR {dirname}".encode())
+                response = client_socket.recv(BUFFER_SIZE).decode()
+                print(response)
 
-            elif command.startswith("DOWNLOAD"):
-                _, filename = command.split(maxsplit=1)
-                filepath = os.path.join(BASE_DIR, filename)
-                if os.path.exists(filepath):
-                    with open(filepath, "rb") as f:
-                        while data := f.read(1024):
-                            client_socket.send(data)
-                        client_socket.send(b"DONE")
-                else:
-                    client_socket.send("[ERROR] File not found.".encode())
+            elif choice == "5":  # Remove directory
+                dirname = input("Enter the name of the directory to remove: ").strip()
+                client_socket.send(f"RMDIR {dirname}".encode())
+                response = client_socket.recv(BUFFER_SIZE).decode()
+                print(response)
 
-            elif command.startswith("MKDIR"):
-                _, dirname = command.split(maxsplit=1)
-                dirpath = os.path.join(BASE_DIR, dirname)
-                try:
-                    os.makedirs(dirpath)
-                    client_socket.send(
-                        f"[SUCCESS] Directory {dirname} created.".encode()
-                    )
-                except Exception as e:
-                    client_socket.send(
-                        f"[ERROR] Could not create directory: {str(e)}".encode()
-                    )
-
-            elif command.startswith("RMDIR"):
-                _, dirname = command.split(maxsplit=1)
-                dirpath = os.path.join(BASE_DIR, dirname)
-                try:
-                    os.rmdir(dirpath)
-                    client_socket.send(
-                        f"[SUCCESS] Directory {dirname} removed.".encode()
-                    )
-                except Exception as e:
-                    client_socket.send(
-                        f"[ERROR] Could not remove directory: {str(e)}".encode()
-                    )
-
-            elif command == "QUIT":
-                client_socket.send("[DISCONNECTED] Goodbye!".encode())
+            elif choice == "6":  # Quit
+                client_socket.send("QUIT".encode())
+                response = client_socket.recv(BUFFER_SIZE).decode()
+                print(response)
                 break
 
             else:
-                client_socket.send("[ERROR] Invalid command.".encode())
+                print("Invalid choice. Please select 1-6.")
 
-        except Exception as e:
-            print(f"[ERROR] {str(e)}")
-            break
-
-    client_socket.close()
-    print(f"[DISCONNECTED] {addr} disconnected.")
-
-
-def start_server():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((HOST, PORT))
-    server_socket.listen()
-    print(f"[STARTED] Server running on {HOST}:{PORT}")
-
-    while True:
-        client_socket, addr = server_socket.accept()
-        thread = threading.Thread(target=handle_client, args=(client_socket, addr))
-        thread.start()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+    finally:
+        client_socket.close()
+        print("[DISCONNECTED] Client closed connection.")
 
 
 if __name__ == "__main__":
-    start_server()
+    start_client()
